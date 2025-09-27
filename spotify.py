@@ -5,6 +5,7 @@ import os
 import yt_dlp as youtube_dl
 import eyed3
 import urllib
+import re
 # import vlc
 
 # Spotify API
@@ -52,6 +53,8 @@ def my_hook(d):
         print('Done downloading, now converting ...')
 
 ydl_opts = {
+    # If you use windows make sure to use \\ instead of \.
+    # It should look something like this 'C:\\ffmpeg\\bin\\ffmpeg.exe'
     'ffmpeg_location': 'YOUR_FFMEG_LOCATION_HERE',
     'format': 'bestaudio/best',
     'extractaudio': True,
@@ -79,77 +82,122 @@ def get_yt_track_url(track):
         except:
             return None
 
-def songs_downloader(folder, tracks):
-    # Download songs
+def sanitize_filename(name: str) -> str:
+    """
+    Remove or replace characters that are not allowed in filenames.
+    """
+    # Replace invalid characters with underscore
+    sanitized = re.sub(r'[<>:"/\\|?*]', '_', name)
+    # Strip trailing/leading spaces and dots (Windows doesn’t like them)
+    sanitized = sanitized.strip().rstrip('.')
+    return sanitized
+
+def songs_downloader(base_folder, tracks):
+    """
+    Save as: <base or none>/<Artist>/<Album>/<NN - Song>.mp3
+    Prevents duplicates when base == album (e.g., 'Album/Artist/Album/Song').
+    """
     for i, track in enumerate(tracks):
-        print(f"Tracks downloaded: {i}/{len(tracks)}")
-        song = track.name
-        artist = track.artists[0].name
-        album = track.album.name
+        print(f"Tracks processed: {i}/{len(tracks)}")
 
-        # Sanitize names
-        song = sanitize_filename(song)
-        artist = sanitize_filename(artist)
-        album = sanitize_filename(album)
+        # Raw fields from Spotify (with safe fallbacks)
+        raw_song   = getattr(track, "name", None) or "Unknown Title"
+        raw_artist = (track.artists[0].name if getattr(track, "artists", None) else "Unknown Artist")
+        raw_album  = (track.album.name if getattr(track, "album", None) else "Unknown Album")
 
-        print(f'Downloading: {song} by {artist}')
-        ydl_opts['outtmpl'] = f'{artist} - {song}.%(ext)s'
+        # Sanitize for filesystem
+        song   = sanitize_filename(raw_song)
+        artist = sanitize_filename(raw_artist)
+        album  = sanitize_filename(raw_album)
 
-        # Build the destination path
-        destination_path = os.path.join(folder, artist, album)
-        file_name = f'{artist} - {song}.mp3'
+        # Filename (with track number if present)
+        track_num = getattr(track, "track_number", None)
+        file_name = f"{track_num:02d} - {song}.mp3" if isinstance(track_num, int) and track_num > 0 else f"{song}.mp3"
+
+        # Base folder handling (avoid Album/Artist/Album nesting)
+        base = sanitize_filename(base_folder) if base_folder else ""
+        if base and base.lower() == album.lower():
+            base = ""  # prevent duplicate album segment
+
+        # Build final destination: <base>/<Artist>/<Album>/
+        parts = [p for p in [base, artist, album] if p]
+        destination_path = os.path.join(*parts) if parts else os.path.join(artist, album)
         full_destination = os.path.join(destination_path, file_name)
 
-        # Download song if not already downloaded
-        if not os.path.exists(full_destination):
-            try:
-                with youtube_dl.YoutubeDL(ydl_opts) as ydl:
-                    ydl.download([f'ytsearch1:{song} {artist}'])
+        # Skip if already there
+        if os.path.exists(full_destination):
+            print(f"Already downloaded: {full_destination}")
+            continue
 
-                # If song is not downloaded, skip
-                if not os.path.exists(file_name):
-                    print(f'Failed to download {file_name}')
+        # Ensure folder exists
+        os.makedirs(destination_path, exist_ok=True)
+
+        # yt-dlp options per-track so we don't mutate globals
+        ydl_local = dict(ydl_opts)
+        ydl_local['outtmpl'] = os.path.join(destination_path, os.path.splitext(file_name)[0] + ".%(ext)s")
+
+        print(f"Downloading: {raw_song} by {raw_artist}")
+        try:
+            with youtube_dl.YoutubeDL(ydl_local) as ydl:
+                ydl.download([f'ytsearch1:{raw_song} {raw_artist}'])
+
+            # If postprocessor altered the name, normalize to our intended filename
+            if not os.path.exists(full_destination):
+                mp3s = [f for f in os.listdir(destination_path) if f.lower().endswith('.mp3')]
+                if mp3s:
+                    newest = max((os.path.join(destination_path, f) for f in mp3s), key=os.path.getmtime)
+                    if newest != full_destination:
+                        try:
+                            os.rename(newest, full_destination)
+                        except Exception as e:
+                            print(f"Warning: couldn't rename {newest} -> {full_destination}: {e}")
+
+            # Tagging
+            if os.path.exists(full_destination):
+                audiofile = eyed3.load(full_destination)
+                if audiofile is None:
+                    print(f"Warning: couldn't load mp3 for tagging: {full_destination}")
                     continue
-
-                # Add metadata
-                audiofile = eyed3.load(file_name)
                 if audiofile.tag is None:
                     audiofile.initTag()
-                audiofile.tag.artist = artist
-                audiofile.tag.title = song
-                audiofile.tag.album = album
-                audiofile.tag.album_artist = track.album.artists[0].name
 
-                # Get the artist's genre
-                artist_id = track.artists[0].id
-                genres = spotify.artist(artist_id).genres
-                if genres:
-                    audiofile.tag.genre = genres[-1]
-                audiofile.tag.track_num = track.track_number
+                audiofile.tag.artist = raw_artist
+                audiofile.tag.title = raw_song
+                audiofile.tag.album = raw_album
+                if getattr(track, "album", None) and getattr(track.album, "artists", None):
+                    audiofile.tag.album_artist = track.album.artists[0].name
 
-                # Add album art
-                imagedata = urllib.request.urlopen(track.album.images[0].url).read()
-                audiofile.tag.images.set(3, imagedata, 'image/jpeg')
-                audiofile.tag.save()
-
-                # Create destination directories
-                os.makedirs(destination_path, exist_ok=True)
-
-                # Move song to destination folder
+                # Genre from Spotify artist
                 try:
-                    os.rename(file_name, full_destination)
-                    print(f'Moved {file_name} to {full_destination}')
-                except Exception as e:
-                    print(f'Error moving file: {e}')
-            except youtube_dl.utils.DownloadError as e:
-                print(f"Error downloading '{song}' by '{artist}': {e}. Skipping this song.")
-                continue
-            except Exception as e:
-                print(f"An unexpected error occurred while downloading '{song}' by '{artist}': {e}. Skipping this song.")
-                continue
-        else:
-            print('Already downloaded')
+                    artist_id = track.artists[0].id
+                    genres = spotify.artist(artist_id).genres
+                    if genres:
+                        audiofile.tag.genre = genres[-1]
+                except Exception:
+                    pass
 
+                if isinstance(track_num, int) and track_num > 0:
+                    audiofile.tag.track_num = track_num
+
+                # Album art
+                try:
+                    if getattr(track, "album", None) and getattr(track.album, "images", None):
+                        imagedata = urllib.request.urlopen(track.album.images[0].url).read()
+                        audiofile.tag.images.set(3, imagedata, 'image/jpeg')
+                except Exception as e:
+                    print(f"Warning: couldn't embed cover art: {e}")
+
+                audiofile.tag.save()
+                print(f"Saved: {full_destination}")
+            else:
+                print(f"Failed to find the downloaded file at: {full_destination}")
+
+        except youtube_dl.utils.DownloadError as e:
+            print(f"Error downloading '{raw_song}' by '{raw_artist}': {e}. Skipping.")
+            continue
+        except Exception as e:
+            print(f"Unexpected error for '{raw_song}' by '{raw_artist}': {e}. Skipping.")
+            continue
 
 
 print("Logged in as " + spotify.current_user().email)
@@ -323,20 +371,20 @@ def main():
             playlist = playlists.items[int(input("Enter playlist number: "))]
             tracks = get_playlist_tracks(playlist)
             tracks = playlist_tracks_to_tracks(tracks)
-            songs_downloader(playlist.name, tracks)
+            songs_downloader("Music", tracks)
         elif action == 2:
             playlists = list_playlists()
             playlist = playlists.items[int(input("Enter playlist number: "))]
             tracks = get_playlist_tracks(playlist)
             recommendations = get_recommendations(tracks)
-            songs_downloader(playlist.name+" recommendations", recommendations)
+            songs_downloader("Music", recommendations)
         elif action == 3:
             top_tracks = get_top_tracks(int(input("Enter number of top tracks: ")))
-            songs_downloader("Top tracks", top_tracks)
+            songs_downloader("Music", top_tracks)
         elif action == 4:
             top_tracks = get_top_tracks(int(input("Enter number of top tracks: ")))
             recommendations = get_recommendations(top_tracks)
-            songs_downloader("Top tracks recommendations", recommendations)
+            songs_downloader("Music", recommendations)
         elif action == 5:
             playlists = list_playlists()
             playlist = playlists.items[int(input("Enter playlist number: "))]
@@ -363,7 +411,7 @@ def main():
         elif action == 11:  # New action for downloading liked songs
             liked_songs = list_liked_songs()
             liked_tracks = [item.track for item in liked_songs]
-            songs_downloader("Liked songs", liked_tracks)
+            songs_downloader("Music", liked_tracks)
 
 
 
