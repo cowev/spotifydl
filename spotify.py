@@ -1,24 +1,48 @@
 # Download spotify playlist to mp3
+from difflib import SequenceMatcher
 
 import tekore as tk
 import os
-import yt_dlp as youtube_dl
+import yt_dlp
 import eyed3
 import urllib
 import re
 
 # Spotify API
 client_id_path = "CLIENT_ID.txt"  # 'YOUR_CLIENT_ID_LOCATION_HERE'
-client_secret_path = "CLIENT_SECRET.txt "  # 'YOUR_CLIENT_SECRET_LOCATION_HERE'
-ffmpeg_path = "D:\\Programs\\ffmpeg.exe"  # 'YOUR_FFMEG_LOCATION_HERE'
+client_secret_path = "CLIENT_SECRET.txt"  # 'YOUR_CLIENT_SECRET_LOCATION_HERE'
+user_token_path = "USER_TOKEN.txt"  # Will be filled automatically, don't worry about filling this
+ffmpeg_path = "D:\\Programs\\ffmpeg.exe"  # 'YOUR_FFMPEG_LOCATION_HERE'
+download_path = "E:\\Music\\NewDL"  # 'YOUR_DOWNLOAD_FOLDER_LOCATION_HERE'
 
-redirect_uri = 'http://localhost:8001/'
+# If you use Windows, make sure to use \\ instead of \.
+# It should look something like this 'C:\\ffmpeg\\bin\\ffmpeg.exe'
 
+redirect_uri = 'http://localhost:5000/'
+
+# Read client_id
+if os.path.exists(client_id_path):
+    with open(client_id_path, 'r') as f:
+        client_id = f.read().strip()
+else:
+    raise FileNotFoundError("Missing file: {client_id_path}")
+
+# Read client_secret
+if os.path.exists(client_secret_path):
+    with open(client_secret_path, 'r') as f:
+        client_secret = f.read().strip()
+else:
+    raise FileNotFoundError(f"Missing file: {client_secret_path}")
+
+# Read user_token (if it exists)
 user_token = None
-# Read user_token from a file if it exists
-if os.path.exists('USER_TOKEN.txt'):
-    with open('USER_TOKEN.txt', 'r') as f:
-        user_token = f.read()
+if os.path.exists(user_token_path):
+    with open(user_token_path, 'r') as f:
+        user_token = f.read().strip()
+
+user_token = user_token.strip() if user_token else None
+if user_token is None:
+    print(f"{user_token_path} not found. Will be created automatically later.")
 
 # Test a token if it is valid
 try:
@@ -27,19 +51,27 @@ try:
 except tk.HTTPError:
     # If a token is invalid, get a new token
     user_token = tk.prompt_for_user_token(
-        client_id_path,
-        client_secret_path,
+        client_id,
+        client_secret,
         redirect_uri,
         scope=tk.scope.every
     )
     # Save user_token in a file
-    with open('USER_TOKEN', 'w') as f:
+    with open('USER_TOKEN.txt', 'w') as f:
         f.write(str(user_token))
     spotify = tk.Spotify(user_token)
 
 
-class MyLogger(object):
+class MyLogger:
     def debug(self, msg):
+        # For compatibility with yt-dlp, both debug and info are passed into debug
+        # You can distinguish them by the prefix '[debug]'
+        if msg.startswith('[debug] '):
+            pass
+        else:
+            self.info(msg)
+
+    def info(self, msg):
         pass
 
     def warning(self, msg):
@@ -55,8 +87,6 @@ def my_hook(d):
 
 
 ydl_opts = {
-    # If you use Windows, make sure to use \\ instead of \.
-    # It should look something like this 'C:\\ffmpeg\\bin\\ffmpeg.exe'
     'ffmpeg_location': ffmpeg_path,
     'format': 'bestaudio/best',
     'extractaudio': True,
@@ -68,20 +98,50 @@ ydl_opts = {
         'preferredquality': '320',
     }],
     'logger': MyLogger(),
-    # 'progress_hooks': [my_hook],
+    'progress_hooks': [my_hook],
 }
 
 
 def get_yt_track_url(track):
-    # Get youtube url of song
+    """Get the most accurate YouTube URL for a Spotify track."""
     song = track.name
-    artist = track.artists[0].name
-    print('Searching: ' + song + ' by ' + artist)
-    with youtube_dl.YoutubeDL(ydl_opts) as ydl:
+    artist = track.artists[0].name if track.artists else ""
+    album = track.album.name if track.album else ""
+    target_title = f"{song} {artist}".lower()
+    target_duration_ms = getattr(track, 'duration_ms', 0)
+
+    query = f"{song} {artist} {album}" # official audio"
+    query = re.sub(r'[^\w\s]', '', query)  # remove punctuation
+
+    print(f"Searching YouTube for: {query}")
+
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         try:
-            result = ydl.extract_info('ytsearch1:' + song + ' ' + artist, download=False)['entries'][0]
-            return result['webpage_url']
-        except:
+            results = ydl.extract_info(f"ytsearch10:{query}", download=False)['entries']
+            if not results:
+                print(f"No YouTube results for {song} by {artist}")
+                return None
+
+            # Compute similarity between YouTube title and Spotify track
+            def similarity(a, b):
+                return SequenceMatcher(None, a.lower(), b.lower()).ratio()
+
+            # Filter out videos with wildly different duration (optional)
+            def duration_diff(entry):
+                video_ms = (entry.get('duration') or 0) * 1000
+                return abs(video_ms - target_duration_ms)
+
+            # Sort by title similarity first, then duration
+            best_match = min(
+                results,
+                key=lambda e: (duration_diff(e), -SequenceMatcher(None, e['title'].lower(), target_title).ratio())
+            )
+
+            print(f"Selected YouTube video: {best_match['title']}")
+            return best_match['webpage_url']
+
+        except Exception as e:
+            print(f"Error searching YouTube for {song} by {artist}: {e}")
             return None
 
 
@@ -101,6 +161,9 @@ def songs_downloader(base_folder, tracks):
     Save as: <base or none>/<Artist>/<Album>/<NN - Song>.mp3
     Prevents duplicates when base == album (e.g., 'Album/Artist/Album/Song').
     """
+    successful = 0
+    failed = 0
+    failedList = []
     for i, track in enumerate(tracks):
         print(f"Tracks processed: {i}/{len(tracks)}")
 
@@ -125,7 +188,7 @@ def songs_downloader(base_folder, tracks):
 
         # Build final destination: <base>/<Artist>/<Album>/
         parts = [p for p in [base, artist, album] if p]
-        destination_path = os.path.join(*parts) if parts else os.path.join(artist, album)
+        destination_path = os.path.join(download_path, *parts) if parts else os.path.join(artist, album)
         full_destination = os.path.join(destination_path, file_name)
 
         # Skip if already there
@@ -142,14 +205,23 @@ def songs_downloader(base_folder, tracks):
 
         print(f"Downloading: {raw_song} by {raw_artist}")
         try:
-            with youtube_dl.YoutubeDL(ydl_local) as ydl:
-                ydl.download([f'ytsearch1:{raw_song} {raw_artist}'])
+            with yt_dlp.YoutubeDL(ydl_local) as ydl:
+                youtube_url = get_yt_track_url(track)
+                if not youtube_url:
+                    print(f"Could not find YouTube URL for {raw_song} by {raw_artist}. Skipping.")
+                    failed += 1
+                    failedList.append(f"{raw_song} by {raw_artist}")
+                    continue
 
-            # If postprocessor altered the name, normalize to our intended filename
+                with yt_dlp.YoutubeDL(ydl_local) as ydl:
+                    ydl.download([youtube_url])
+
+            # If the postprocessor altered the name, normalize to our intended filename
             if not os.path.exists(full_destination):
-                mp3s = [f for f in os.listdir(destination_path) if f.lower().endswith('.mp3')]
+                mp3s = [file_name for file_name in os.listdir(destination_path) if file_name.lower().endswith('.mp3')]
                 if mp3s:
-                    newest = max((os.path.join(destination_path, f) for f in mp3s), key=os.path.getmtime)
+                    newest = max((os.path.join(destination_path, file_name) for file_name in mp3s),
+                                 key=os.path.getmtime)
                     if newest != full_destination:
                         try:
                             os.rename(newest, full_destination)
@@ -177,48 +249,55 @@ def songs_downloader(base_folder, tracks):
                     genres = spotify.artist(artist_id).genres
                     if genres:
                         audiofile.tag.genre = genres[-1]
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"Warning: couldn't get genre: {e}")
 
                 if isinstance(track_num, int) and track_num > 0:
                     audiofile.tag.track_num = track_num
 
                 # Album art
                 try:
-                    if getattr(track, "album", None) and getattr(track.album, "images", None):
-                        imagedata = urllib.request.urlopen(track.album.images[0].url).read()
-                        audiofile.tag.images.set(3, imagedata, 'image/jpeg')
+                    if getattr(track, "album", None):
+                        images = getattr(track.album, "images", [])
+                        if images:
+                            imagedata = urllib.request.urlopen(images[0].url).read()
+                            audiofile.tag.images.set(3, imagedata, 'image/jpeg')
                 except Exception as e:
                     print(f"Warning: couldn't embed cover art: {e}")
 
                 audiofile.tag.save()
                 print(f"Saved: {full_destination}")
+                successful += 1
             else:
                 print(f"Failed to find the downloaded file at: {full_destination}")
+                failed += 1
+                failedList.append(f"{raw_song} by {raw_artist}")
 
-        except youtube_dl.utils.DownloadError as e:
+        except yt_dlp.utils.DownloadError as e:
             print(f"Error downloading '{raw_song}' by '{raw_artist}': {e}. Skipping.")
+            failed += 1
+            failedList.append(f"{raw_song} by {raw_artist}")
             continue
         except Exception as e:
             print(f"Unexpected error for '{raw_song}' by '{raw_artist}': {e}. Skipping.")
+            failed += 1
+            failedList.append(f"{raw_song} by {raw_artist}")
             continue
+
+    for failedTrack in failedList:
+        print(f"Failed to download: {failedTrack}")
 
 
 print("Logged in as " + spotify.current_user().email)
 
 
 def choose_quality():
-    # Choose quality of songs
-    quality = input("Choose quality of songs (190 or 320): ")
-    if quality == '':
-        ydl_opts['postprocessors'][0]['preferredquality'] = '320'
-    elif quality == '190':
-        ydl_opts['postprocessors'][0]['preferredquality'] = '190'
-    elif quality == '320':
-        ydl_opts['postprocessors'][0]['preferredquality'] = '320'
-    else:
-        print("Invalid input")
-        choose_quality()
+    while True:
+        quality = input("Choose the quality of songs (190 or 320) [default: 320]: ")
+        if quality in ['', '190', '320']:
+            ydl_opts['postprocessors'][0]['preferredquality'] = quality if quality else '320'
+            break
+        print("Invalid input, please enter 190, 320, or press Enter for default")
 
 
 def list_playlists():
@@ -290,7 +369,12 @@ def menu():
     print("Extra options:")
     print("10. Choose quality of songs")
     print("11. Download liked songs")  # New option for downloading liked songs
-    return int(input("Enter option: "))
+    try:
+        action = int(input("Enter option: "))
+    except ValueError:
+        print("Invalid input")
+        return menu()
+    return action
 
 
 def playlist_tracks_to_tracks(playlist_tracks):
@@ -330,32 +414,37 @@ def search_menu():
     print("2. Search artists")
     print("3. Search albums")
     print("4. Exit")
-    action = int(input("Enter option: "))
-    if action == 1:
-        query = input("Enter query: ")
-        results = search_tracks(query)
-        for i, track in enumerate(results[0].items):
-            print(i, end=". ")
-            print(track.name, end=" - ")
-            print(track.artists[0].name)
-        return query, results[0].items
-    elif action == 2:
-        query = input("Enter query: ")
-        results = search_artists(query)
-        for i, artist in enumerate(results[0].items):
-            print(i, end=". ")
-            print(artist.name)
-        return query, results[0].items
-    elif action == 3:
-        query = input("Enter query: ")
-        results = search_albums(query)
-        for i, album in enumerate(results[0].items):
-            print(i, end=". ")
-            print(album.name, end=" - ")
-            print(album.artists[0].name)
-        return query, results[0].items
-    elif action == 4:
-        return None
+    try:
+        action = int(input("Enter option: "))
+        if action == 1:
+            query = input("Enter query: ")
+            results = search_tracks(query)
+            for i, track in enumerate(results[0].items):
+                print(i, end=". ")
+                print(track.name, end=" - ")
+                print(track.artists[0].name)
+            return query, results[0].items
+        elif action == 2:
+            query = input("Enter query: ")
+            results = search_artists(query)
+            for i, artist in enumerate(results[0].items):
+                print(i, end=". ")
+                print(artist.name)
+            return query, results[0].items
+        elif action == 3:
+            query = input("Enter query: ")
+            results = search_albums(query)
+            for i, album in enumerate(results[0].items):
+                print(i, end=". ")
+                print(album.name, end=" - ")
+                print(album.artists[0].name)
+            return query, results[0].items
+        elif action == 4:
+            return None
+    except ValueError:
+        print("Invalid input, try again.")
+        search_menu()
+    return None
 
 
 def post_search_menu(query, results):
@@ -363,14 +452,18 @@ def post_search_menu(query, results):
     print("1. Download songs from search results")
     print("2. Create playlist from search results")
     print("3. Exit")
-    action = int(input("Enter option: "))
+    try:
+        action = int(input("Enter option: "))
+    except ValueError:
+        print("Invalid input")
+        return post_search_menu(query, results)
     if action == 1:
-        # Choose song to download (one or more)
+        # Choose a song to download (one or more)
         songs_index = input("Enter songs number, all for all: ")
         if songs_index == 'all':
             songs_downloader("Search : " + query, results)
         else:
-            # Split could be a , a space , a . or a -
+            # Split could be " ", "." or "-"
             songs_index = songs_index.replace(',', ' ').replace('.', ' ').replace('-', ' ').split()
             songs_index = [int(i) for i in songs_index]
             songs_downloader("Search : " + query, [results[i] for i in songs_index])
@@ -379,7 +472,11 @@ def post_search_menu(query, results):
         add_tracks_to_playlist(playlist, results)
         print("Playlist created: " + playlist.name)
     elif action == 3:
-        return
+        return None
+    else:
+        print("Invalid input")
+        return post_search_menu(query, results)
+    return None
 
 
 def main():
@@ -387,13 +484,23 @@ def main():
         action = menu()
         if action == 1:
             playlists = list_playlists()
-            playlist = playlists.items[int(input("Enter playlist number: "))]
+            try:
+                playlist_index = int(input("Enter playlist number: "))
+                playlist = playlists.items[playlist_index]
+            except (ValueError, IndexError):
+                print("Invalid playlist number. Try again.")
+                continue  # loops back in main()
             tracks = get_playlist_tracks(playlist)
             tracks = playlist_tracks_to_tracks(tracks)
             songs_downloader("Music", tracks)
         elif action == 2:
             playlists = list_playlists()
-            playlist = playlists.items[int(input("Enter playlist number: "))]
+            try:
+                playlist_index = int(input("Enter playlist number: "))
+                playlist = playlists.items[playlist_index]
+            except (ValueError, IndexError):
+                print("Invalid playlist number. Try again.")
+                continue  # loops back in main()
             tracks = get_playlist_tracks(playlist)
             recommendations = get_recommendations(tracks)
             songs_downloader("Music", recommendations)
@@ -421,8 +528,8 @@ def main():
             playlist = create_playlist("Top tracks recommendations", "Recommended songs from top tracks")
             add_tracks_to_playlist(playlist, recommendations)
         elif action == 8:
-            search, results = search_menu()
-            post_search_menu(search, results)
+            execute_search, results = search_menu()
+            post_search_menu(execute_search, results)
         elif action == 9:
             exit()
         elif action == 10:
@@ -432,9 +539,6 @@ def main():
             liked_tracks = [item.track for item in liked_songs]
             songs_downloader("Music", liked_tracks)
 
-
-import time
-import sys
 
 if __name__ == "__main__":
     main()
