@@ -1,3 +1,8 @@
+# Ignore future changes to the auth files
+CLIENT_ID.txt
+CLIENT_SECRET.txt
+USER_TOKEN.txt
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
