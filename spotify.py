@@ -3,6 +3,8 @@ from difflib import SequenceMatcher
 
 import tekore as tk
 import os
+
+import unicodedata
 import yt_dlp
 import eyed3
 import urllib
@@ -98,51 +100,128 @@ ydl_opts = {
         'preferredquality': '320',
     }],
     'logger': MyLogger(),
-    'progress_hooks': [my_hook],
+    # 'progress_hooks': [my_hook],
 }
 
 
-def get_yt_track_url(track):
-    """Get the most accurate YouTube URL for a Spotify track."""
+def make_ascii(query):
+    """Convert to ASCII-friendly string, removing accents and unusual characters."""
+    # Normalize Unicode characters
+    nfkd_form = unicodedata.normalize('NFKD', query)
+    # Encode to ASCII ignoring errors, then decode back to string
+    ascii_query = nfkd_form.encode('ASCII', 'ignore').decode('ASCII')
+    # Remove any leftover non-word characters (optional)
+    ascii_query = re.sub(r'[^\w\s]', '', ascii_query)
+    return ascii_query
+
+
+def score_result(result, expected_song, expected_artist, target_duration=None):
+    # Score a YouTube result based on title, artist, duration, and unwanted content.
+    title = result['title'].lower()
+    uploader = result.get('uploader', '').lower()
+    duration = result.get('duration', 0)  # seconds
+    score = 0
+
+    # Fuzzy title match
+    title_ratio = SequenceMatcher(None, expected_song.lower(), title).ratio()
+    score += 0.3 * title_ratio
+
+    # Artist in title
+    if expected_artist.lower() in title:
+        score += 0.2
+
+    # Artist in uploader
+    if expected_artist.lower() in uploader:
+        score += 0.2
+
+    # Duration match
+    if target_duration:
+        diff = abs(duration - target_duration)
+        score += 0.3 * max(0, 1 - diff / 30)  # scale by +/-30s
+
+    # Penalize unwanted content
+    unwanted_terms = ['cover', 'live', 'karaoke', 'instrumental']
+    for term in unwanted_terms:
+        if term in title:
+            score -= 0.5
+
+    return max(0, score)
+
+
+def normalize_album(track):
+    """
+    Normalize the album name by removing unwanted tags or duplicates of the song name.
+    """
+    album = track.album.name if track.album else ""
+    song = track.name
+
+    # Remove the album if it is identical to the song name
+    if album.lower().replace(" ", "") == song.lower().replace(" ", ""):
+        album = ""
+    # Remove unwanted album tags
+    elif "scmp3" in album.lower():
+        album = ""
+
+    return album
+
+
+def get_best_youtube_match(track, max_results=10):
     song = track.name
     artist = track.artists[0].name if track.artists else ""
     album = track.album.name if track.album else ""
-    target_title = f"{song} {artist}".lower()
-    target_duration_ms = getattr(track, 'duration_ms', 0)
+    target_duration = getattr(track, 'duration_ms', 0) / 1000
 
-    query = f"{song} {artist} {album}" # official audio"
-    query = re.sub(r'[^\w\s]', '', query)  # remove punctuation
-
-    print(f"Searching YouTube for: {query}")
-
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+    def search_and_score(query):
         try:
-            results = ydl.extract_info(f"ytsearch10:{query}", download=False)['entries']
-            if not results:
-                print(f"No YouTube results for {song} by {artist}")
-                return None
-
-            # Compute similarity between YouTube title and Spotify track
-            def similarity(a, b):
-                return SequenceMatcher(None, a.lower(), b.lower()).ratio()
-
-            # Filter out videos with wildly different duration (optional)
-            def duration_diff(entry):
-                video_ms = (entry.get('duration') or 0) * 1000
-                return abs(video_ms - target_duration_ms)
-
-            # Sort by title similarity first, then duration
-            best_match = min(
-                results,
-                key=lambda e: (duration_diff(e), -SequenceMatcher(None, e['title'].lower(), target_title).ratio())
-            )
-
-            print(f"Selected YouTube video: {best_match['title']}")
-            return best_match['webpage_url']
-
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                results = ydl.extract_info(f"ytsearch{max_results}:{query}", download=False)['entries']
+                if not results:
+                    return []
+                scored_results = []
+                for r in results:
+                    scored_results.append({
+                        'url': r['webpage_url'],
+                        'score': score_result(r, song, artist, target_duration),
+                        'title': r['title']
+                    })
+                return scored_results
         except Exception as e:
-            print(f"Error searching YouTube for {song} by {artist}: {e}")
-            return None
+            print(f"Error searching YouTube: {e}")
+            return []
+
+    # 1. Full query
+    query = re.sub(r'[^\w\s]', '', f"{song} {artist} {album}")
+    print(f"Searching YouTube for: {query}")
+    scored_results = search_and_score(query)
+
+    # 2. Retry without album if no confident match
+    if not scored_results or max(scored_results, key=lambda x: x['score'])['score'] < 0.5:
+        query = re.sub(r'[^\w\s]', '', f"{song} {artist}")
+        print(f"No confident match, retrying without album: {query}")
+        scored_results = search_and_score(query)
+
+    # 3. Retry with ASCII-only if still no confident match
+    if not scored_results or max(scored_results, key=lambda x: x['score'])['score'] < 0.5:
+        ascii_query = make_ascii(f"{song} {artist}")
+        print(f"No confident match, retrying ASCII-only: {ascii_query}")
+        scored_results = search_and_score(ascii_query)
+
+    if not scored_results:
+        print(f"No YouTube results for {song} by {artist}")
+        return None
+
+    best = max(scored_results, key=lambda x: x['score'])
+    if best['score'] >= 0.5:
+        print(f"Selected YouTube video: {best['title']}")
+        return best['url']
+    else:
+        print(f"No confident match for {song} by {artist} (best result: {best['title']} ({best['score']})")
+        return None
+
+
+def get_yt_track_url(track):
+    # Wrapper to get YouTube URL for a Spotify track using the best match function.
+    return get_best_youtube_match(track)
 
 
 def sanitize_filename(name: str) -> str:
@@ -163,7 +242,7 @@ def songs_downloader(base_folder, tracks):
     """
     successful = 0
     failed = 0
-    failedList = []
+    failed_list = []
     for i, track in enumerate(tracks):
         print(f"Tracks processed: {i}/{len(tracks)}")
 
@@ -205,16 +284,15 @@ def songs_downloader(base_folder, tracks):
 
         print(f"Downloading: {raw_song} by {raw_artist}")
         try:
-            with yt_dlp.YoutubeDL(ydl_local) as ydl:
-                youtube_url = get_yt_track_url(track)
-                if not youtube_url:
-                    print(f"Could not find YouTube URL for {raw_song} by {raw_artist}. Skipping.")
-                    failed += 1
-                    failedList.append(f"{raw_song} by {raw_artist}")
-                    continue
+            youtube_url = get_best_youtube_match(track)
+            if not youtube_url:
+                print(f"Could not find YouTube URL for {raw_song} by {raw_artist}. Skipping.")
+                failed += 1
+                failed_list.append(f"{raw_song} by {raw_artist}")
+                continue
 
-                with yt_dlp.YoutubeDL(ydl_local) as ydl:
-                    ydl.download([youtube_url])
+            with yt_dlp.YoutubeDL(ydl_local) as ydl:
+                ydl.download([youtube_url])
 
             # If the postprocessor altered the name, normalize to our intended filename
             if not os.path.exists(full_destination):
@@ -271,20 +349,20 @@ def songs_downloader(base_folder, tracks):
             else:
                 print(f"Failed to find the downloaded file at: {full_destination}")
                 failed += 1
-                failedList.append(f"{raw_song} by {raw_artist}")
+                failed_list.append(f"{raw_song} by {raw_artist}")
 
         except yt_dlp.utils.DownloadError as e:
             print(f"Error downloading '{raw_song}' by '{raw_artist}': {e}. Skipping.")
             failed += 1
-            failedList.append(f"{raw_song} by {raw_artist}")
+            failed_list.append(f"{raw_song} by {raw_artist}")
             continue
         except Exception as e:
             print(f"Unexpected error for '{raw_song}' by '{raw_artist}': {e}. Skipping.")
             failed += 1
-            failedList.append(f"{raw_song} by {raw_artist}")
+            failed_list.append(f"{raw_song} by {raw_artist}")
             continue
 
-    for failedTrack in failedList:
+    for failedTrack in failed_list:
         print(f"Failed to download: {failedTrack}")
 
 

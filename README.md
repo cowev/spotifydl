@@ -1,72 +1,88 @@
 # spotifydl
 
-## Main code is the work of [rbouteiller](https://github.com/rbouteiller)
+## Original Work
 
+The main code is the work of [rbouteiller](https://github.com/rbouteiller) and has been extended with additional
+functionality.
 
 ## Description
 
-This repository provides a Python script to download Spotify playlists, top tracks,liked tracks, recommendations, and search results as MP3 files, leveraging the Spotify and YouTube APIs.
+This Python script allows you to download Spotify playlists, top tracks, liked tracks, recommendations, and search
+results as MP3 files. It leverages the Spotify API via **Tekore** and downloads audio from **YouTube** using **yt-dlp**,
+while tagging MP3 files with metadata using **eyed3**.
 
 ## Features
 
 1. Download songs from a chosen Spotify playlist.
 2. Download recommended songs based on a Spotify playlist.
-3. Download your top tracks from Spotify.
+3. Download your top Spotify tracks.
 4. Download recommendations based on your top tracks.
-5. Download liked(saved) tracks from your profile.
+5. Download liked (saved) tracks from your Spotify profile.
 6. Create new Spotify playlists from recommendations or top tracks.
-7. Search for tracks, artists, albums, and download songs from the search results.
-8. Set the preferred quality of downloaded songs (190kbps or 320kbps).
+7. Search for tracks, artists, albums, and playlists, with the option to download tracks from search results.
+8. Choose a preferred audio quality (190kbps or 320kbps).
+9. Intelligent YouTube search with fallback mechanisms:
+
+    * Retry without the album title if the initial search fails.
+    * Retry with ASCII-only characters for titles containing special characters.
+10. Tags downloaded MP3 files with artist, title, album, album artist, genre, track number, and album art.
 
 ## Dependencies
 
-1. `tekore` - For accessing the Spotify API.
-2. `yt-dlp` - For downloading and converting songs from YouTube.
-3. `eyed3` - For editing ID3 tags (metadata) in the downloaded MP3 files.
-4. `urllib` - For fetching album artwork.
+* **tekore** – Access the Spotify API.
+* **yt-dlp** – Download and convert audio from YouTube.
+* **eyed3** – Edit ID3 tags in MP3 files.
+* **urllib** – Fetch album artwork.
 
-## Setup and Usage
-
-1. **Spotify Developer Dashboard** From the Spotify Developer Dashboard create a new app with redirect url `http://127.0.0.1:5000/`
-
-3. **API Keys:** Replace `client_id`, `client_secret` with your personal credentials from the new app created.
-4. **FFMEG Location:** Replace `YOUR_FFMEG_LOCATION_HERE` with your ffmeg.exe location( modified because requesting the exe location in code caused a bunch of issues for me)
-
-5. **Install Dependencies:**
+Install via pip:
 
 ```bash
 pip install tekore yt-dlp eyed3
 ```
 
-3. **Run Script:**
+## Setup and Usage
+
+1. **Spotify Developer App:**
+   Create a new app in the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard/) with a redirect URI:
+   `http://127.0.0.1:5000/`.
+
+2. **API Credentials:**
+   Save your `client_id` and `client_secret` in `CLIENT_ID.txt` and `CLIENT_SECRET.txt` respectively.
+
+3. **FFmpeg:**
+   Set `ffmpeg_path` in the script to the location of `ffmpeg.exe` on your system.
+
+4. **Run Script**
 
 ```bash
 python spotify.py
 ```
 
-Replace `spotify.py` with the name of the Python script if different.
-
-4. **Follow On-Screen Prompts:** 
-Upon your initial launch, a browser window will open, prompting a connection to your Spotify account. Note that this doesn't have to be the same account linked to the API. The script offers a menu-driven interface to navigate its multiple features. Simply select your preferred function and adhere to the displayed guidelines.
-The script then provides a menu-driven interface for various functionalities. Choose the desired operation and follow the on-screen instructions.
+1. **Follow On-Screen Prompts**
+   On the first run, your browser will open to authenticate your Spotify account. The script then presents a menu-driven
+   interface. Select your desired action and follow prompts.
 
 ## Security Warning
 
-Do not share or publish your `client_id` and `client_secret` publicly. This script uses them to authenticate and access your Spotify data. 
+Keep your `client_id` and `client_secret` private. Do not share them publicly, as they authenticate your access to
+Spotify.
 
 ## Limitations
 
-1. Songs are sourced from YouTube, so some tracks may differ slightly from the original Spotify version.
-2. Some tracks might not be available or might not be downloaded due to various reasons such as unavailability on YouTube.
+1. Songs are downloaded from YouTube, so tracks may differ slightly from Spotify originals.
+2. Some tracks may not be available or downloadable due to YouTube restrictions.
+3. Unicode and special characters in track names may occasionally affect matching; the script attempts fallback
+   strategies to mitigate this.
 
 ## Disclaimer
 
-Downloading copyrighted songs without permission is illegal in many countries. This script is intended for educational purposes and personal use. Always respect copyright laws and terms of service of the platforms you interact with.
+Downloading copyrighted material without permission may be illegal in your country. This script is intended for
+*educational and personal use only*. Respect copyright laws and the terms of service of Spotify and YouTube.
 
 ## Contribution
 
-Feel free to contribute to this project by opening issues or submitting pull requests. 
+Contributions are welcome. Open issues or submit pull requests to improve functionality or fix bugs.
 
 ## License
 
-This project is licensed under the MIT License. Refer to the LICENSE file for more details.
+This project is licensed under the MIT License. See the LICENSE file for details.
