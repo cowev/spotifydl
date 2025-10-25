@@ -69,6 +69,7 @@ except tk.HTTPError:
         f.write(str(user_token))
     spotify = tk.Spotify(user_token)
 
+eyed3.log.setLevel("ERROR")
 
 class MyLogger:
     def debug(self, msg):
@@ -158,23 +159,25 @@ def normalize_album(track):
     """
     Normalize the album name by removing unwanted tags or duplicates of the song name.
     """
-    album = track.album.name if track.album else ""
-    song = track.name
+    if track.album:
+        album = track.album.name
+        song = track.name
 
-    # Remove the album if it is identical to the song name
-    if album.lower().replace(" ", "") == song.lower().replace(" ", ""):
-        album = ""
-    # Remove unwanted album tags
-    elif "scmp3" in album.lower():
+        if album.lower().replace(" ", "") == song.lower().replace(" ", ""):
+            album = ""
+
+        elif "scmp3" in album.lower():
+            album = ""
+    else:
         album = ""
 
     return album
 
 
 def get_best_youtube_matches(track, max_results=10):
-    song = track.name
-    artist = track.artists[0].name if track.artists else ""
-    album = normalize_album(track)
+    song = track.name.replace("-", "")
+    artist = track.artists[0].name.replace("-", "") if track.artists else ""
+    album = normalize_album(track).replace("-", "")
     target_duration = getattr(track, 'duration_ms', 0) / 1000
 
     def is_age_restricted_error(error):
@@ -201,22 +204,28 @@ def get_best_youtube_matches(track, max_results=10):
                     return []
                 scored_results = []
                 for r in results:
-                    scored_results.append({
-                        'url': r['webpage_url'],
-                        'score': score_result(r, song, artist, target_duration),
-                        'title': r['title']
-                    })
+                    score = score_result(r, song, artist, target_duration)
+                    if score > 0.5:
+                        scored_results.append({
+                            'url': r['webpage_url'],
+                            'score': score,
+                            'title': r['title']
+                        })
+
+                if scored_results != []:
+                    scored_results.sort(key=lambda x: x['score'], reverse=True)
+
                 return scored_results
         except yt_dlp.utils.DownloadError as e:
             if is_age_restricted_error(e):
-                print(f"Age restriction detected during search. Trying alternative approach...")
+                print(f"Age restriction detected during search {query}. Trying alternative approach...")
                 # Try a different search approach
                 return search_with_alternative_method(query, max_results)
             else:
-                print(f"Error searching YouTube: {e}")
+                print(f"Error searching YouTube: {query} {e}")
                 return []
         except Exception as e:
-            print(f"Error searching YouTube: {e}")
+            print(f"Error searching YouTube: {query} {e}")
             return []
 
     def search_with_alternative_method(query, max_results):
@@ -243,7 +252,7 @@ def get_best_youtube_matches(track, max_results=10):
                         score += 0.3
 
                     # Penalize unwanted content
-                    unwanted_terms = ['cover', 'karaoke', 'instrumental', 'remix', 'slowed', 'nightcore', 'reverb']
+                    unwanted_terms = ['cover', 'karaoke', 'instrumental', 'remix', 'slowed', 'nightcore', 'daycore', 'reverb']
                     for term in unwanted_terms:
                         if term in title and term not in song.lower():
                             score -= 0.4
@@ -257,18 +266,35 @@ def get_best_youtube_matches(track, max_results=10):
                 return sorted(scored_results, key=lambda x: x['score'], reverse=True)
 
         except Exception as e:
-            print(f"Alternative search also failed: {e}")
+            print(f"Alternative search also failed: {query} {e}")
             return []
 
-    query = f"{song} {artist} {album}"
+    query = f"{artist} {song} {album}"
     print(f"Searching YouTube for: {query}")
     scored_results = search_and_score(query)
 
+    attempted_queries = [query]
     if not scored_results:
         # Try a fallback search without the album name
-        print("Primary search failed, trying fallback search...")
-        fallback_query = f"{song} {artist}"
-        scored_results = search_and_score(fallback_query)
+        fallback_query1 = f"{artist} {song}"
+        if fallback_query1 not in attempted_queries:
+            attempted_queries.append(fallback_query1)
+            print(f"Primary search failed, trying fallback search 1... Searching YouTube for: {fallback_query1}")
+            scored_results = search_and_score(fallback_query1)
+
+        if not scored_results:
+            fallback_query2 = make_ascii(f"{artist} {song} {album}")
+            if fallback_query2 not in attempted_queries:
+                attempted_queries.append(fallback_query2)
+                print(f"Primary search failed, trying fallback search 2... Searching YouTube for: {fallback_query2}")
+                scored_results = search_and_score(fallback_query2)
+
+            if not scored_results:
+                fallback_query3 = make_ascii(f"{artist} {song}")
+                if fallback_query3 not in attempted_queries:
+                    attempted_queries.append(fallback_query3)
+                    print(f"Primary search failed, trying fallback search 3... Searching YouTube for: {fallback_query3}")
+                    scored_results = search_and_score(fallback_query3)
 
     return scored_results
 
@@ -319,10 +345,6 @@ def download_single_track(args):
         return any(indicator in error_str for indicator in age_indicators)
 
     track, playlist_name, track_index, total_tracks = args
-    track, playlist_name, track_index, total_tracks = args
-    successful = 0
-    failed = 0
-    failed_track = None
 
     # Raw Spotify data with fallbacks
     raw_song = getattr(track, "name", "Unknown Title")
@@ -363,7 +385,7 @@ def download_single_track(args):
         youtube_results = get_best_youtube_matches(track)
         if not youtube_results:
             with lock:
-                print(f"[{track_index}/{total_tracks}] Could not find YouTube URL for {raw_song} by {raw_artist}")
+                print(f"[{track_index}/{total_tracks}] Could not find good enough YouTube match for {raw_song} by {raw_artist}")
             return 0, 1, f"{raw_song} by {raw_artist}"
 
         success = False
@@ -372,10 +394,6 @@ def download_single_track(args):
         for candidate in youtube_results:
             youtube_url = candidate['url']
             try:
-                with lock:
-                    print(
-                        f"[{track_index}/{total_tracks}] Trying: {candidate['title']} (Score: {candidate['score']:.2f})")
-
                 # Test if we can extract info first to catch age restrictions earlier
                 with yt_dlp.YoutubeDL(ydl_local) as ydl:
                     # Try to get info first to catch age restrictions
@@ -389,7 +407,7 @@ def download_single_track(args):
                         else:
                             raise  # re-raise other errors
 
-                    # If we get here, proceed with download
+                    # If we get here, proceed with the download
                     ydl.download([youtube_url])
 
                 success = True
@@ -653,12 +671,9 @@ def configure_parallel_downloads():
     """Configure parallel download settings"""
     global max_workers
     print(f"\nCurrent parallel download settings:")
-    print(f"Max parallel downloads: {max_workers}")
-    print(f"Note: Higher numbers may cause rate limiting or performance issues")
-    print(f"Recommended: 2-5 for most systems")
 
     try:
-        new_workers = input(f"Enter new max parallel downloads [current: {max_workers}]: ").strip()
+        new_workers = input(f"Enter new max parallel downloads (Range: 1-100) [current: {max_workers}]: ").strip()
         if new_workers:
             new_workers = int(new_workers)
             if 1 <= new_workers <= 100:
@@ -671,6 +686,7 @@ def configure_parallel_downloads():
 
 
 def menu():
+    print("0. Download liked songs")
     print("1. Download songs from playlist")
     print("2. Download songs from recommendations")
     print("3. Download songs from top tracks")
@@ -679,11 +695,9 @@ def menu():
     print("6. Create playlist from top tracks")
     print("7. Create playlist from top tracks recommendations")
     print("8. Search")
-    print("9. Exit")
-    print("Extra options:")
-    print("10. Choose quality of songs")
-    print("11. Download liked songs")
-    print("12. Configure parallel downloads")  # New option
+    print("9. Choose quality of songs")
+    print("10. Configure parallel downloads")  # New option
+    print("11. Exit")
     try:
         action = int(input("Enter option: "))
     except ValueError:
@@ -894,14 +908,14 @@ def main():
                 parallel = use_parallel != 'n'
                 post_search_menu(query, results, parallel=parallel)
 
-        elif action == 9:
+        elif action == 11:
             print("Goodbye!")
             exit()
 
-        elif action == 10:
+        elif action == 9:
             choose_quality()
 
-        elif action == 11:
+        elif action == 0:
             # Ask about parallel download
             use_parallel = input("Use parallel downloads? (y/n) [default: y]: ").strip().lower()
             parallel = use_parallel != 'n'
@@ -911,7 +925,7 @@ def main():
             playlist_name = "Liked songs"
             songs_downloader(playlist_name, liked_tracks, parallel=parallel)
 
-        elif action == 12:
+        elif action == 10:
             configure_parallel_downloads()
 
         else:
