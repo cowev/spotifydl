@@ -15,7 +15,8 @@ client_id_path = "CLIENT_ID.txt"  # 'YOUR_CLIENT_ID_LOCATION_HERE'
 client_secret_path = "CLIENT_SECRET.txt"  # 'YOUR_CLIENT_SECRET_LOCATION_HERE'
 user_token_path = "USER_TOKEN.txt"  # Will be filled automatically, don't worry about filling this
 ffmpeg_path = "D:\\Programs\\ffmpeg.exe"  # 'YOUR_FFMPEG_LOCATION_HERE'
-download_path = "E:\\Music\\NewDL"  # 'YOUR_DOWNLOAD_FOLDER_LOCATION_HERE'
+download_path = "E:\\NewDL"  # 'YOUR_DOWNLOAD_FOLDER_LOCATION_HERE'
+playlist_name = "Playlist Name"  # change as you wish
 
 # If you use Windows, make sure to use \\ instead of \.
 # It should look something like this 'C:\\ffmpeg\\bin\\ffmpeg.exe'
@@ -140,10 +141,10 @@ def score_result(result, expected_song, expected_artist, target_duration=None):
         score += 0.3 * max(0, 1 - diff / 30)  # scale by +/-30s
 
     # Penalize unwanted content
-    unwanted_terms = ['cover', 'live', 'karaoke', 'instrumental']
+    unwanted_terms = ['cover', 'karaoke', 'instrumental']
     for term in unwanted_terms:
         if term in title:
-            score -= 0.5
+            score -= 0.4
 
     return max(0, score)
 
@@ -168,7 +169,7 @@ def normalize_album(track):
 def get_best_youtube_match(track, max_results=10):
     song = track.name
     artist = track.artists[0].name if track.artists else ""
-    album = track.album.name if track.album else ""
+    album = normalize_album(track)
     target_duration = getattr(track, 'duration_ms', 0) / 1000
 
     def search_and_score(query):
@@ -194,8 +195,8 @@ def get_best_youtube_match(track, max_results=10):
     print(f"Searching YouTube for: {query}")
     scored_results = search_and_score(query)
 
-    # 2. Retry without album if no confident match
-    if not scored_results or max(scored_results, key=lambda x: x['score'])['score'] < 0.5:
+    # 2. Retry without the album if no confident match, skip if the album is an empty string
+    if (not scored_results or max(scored_results, key=lambda x: x['score'])['score'] < 0.5) and album != "":
         query = re.sub(r'[^\w\s]', '', f"{song} {artist}")
         print(f"No confident match, retrying without album: {query}")
         scored_results = search_and_score(query)
@@ -204,7 +205,8 @@ def get_best_youtube_match(track, max_results=10):
     if not scored_results or max(scored_results, key=lambda x: x['score'])['score'] < 0.5:
         ascii_query = make_ascii(f"{song} {artist}")
         print(f"No confident match, retrying ASCII-only: {ascii_query}")
-        scored_results = search_and_score(ascii_query)
+        if ascii_query != query:
+            scored_results = search_and_score(ascii_query)
 
     if not scored_results:
         print(f"No YouTube results for {song} by {artist}")
@@ -235,50 +237,77 @@ def sanitize_filename(name: str) -> str:
     return sanitized
 
 
+def build_download_path(playlist_name, artist, album):
+    """
+    Build an absolute download path using `download_path` as root.
+    Returns: (destination_path, full_file_path)
+    """
+    playlist_name = sanitize_filename(playlist_name) if playlist_name else ""
+    artist = sanitize_filename(artist)
+    album = sanitize_filename(album)
+
+    # Prevent duplicates
+    if playlist_name.lower() == album.lower():
+        playlist_name = ""
+
+    # Combine all parts
+    parts = [p for p in [playlist_name, artist, album] if p]
+
+    # Absolute path under the main download_path
+    destination_path = os.path.join(download_path, *parts)
+    os.makedirs(destination_path, exist_ok=True)
+    return destination_path
+
+
 def songs_downloader(base_folder, tracks):
     """
-    Save as: <base or none>/<Artist>/<Album>/<NN - Song>.mp3
-    Prevents duplicates when base == album (e.g., 'Album/Artist/Album/Song').
+    Download Spotify tracks as MP3s to `download_path/<base>/<Artist>/<Album>/<Track>.mp3`.
+    Handles:
+        - Absolute paths
+        - Folder creation
+        - Duplicate avoidance
+        - Proper tagging with eyed3
     """
     successful = 0
     failed = 0
     failed_list = []
+
     for i, track in enumerate(tracks):
         print(f"Tracks processed: {i}/{len(tracks)}")
 
-        # Raw fields from Spotify (with safe fallbacks)
-        raw_song = getattr(track, "name", None) or "Unknown Title"
-        raw_artist = (track.artists[0].name if getattr(track, "artists", None) else "Unknown Artist")
-        raw_album = (track.album.name if getattr(track, "album", None) else "Unknown Album")
+        # Raw Spotify data with fallbacks
+        raw_song = getattr(track, "name", "Unknown Title")
+        raw_artist = getattr(track.artists[0], "name", "Unknown Artist") if getattr(track, "artists",
+                                                                                    None) else "Unknown Artist"
+        raw_album = getattr(track.album, "name", "Unknown Album") if getattr(track, "album", None) else "Unknown Album"
+        track_num = getattr(track, "track_number", None)
 
         # Sanitize for filesystem
         song = sanitize_filename(raw_song)
         artist = sanitize_filename(raw_artist)
         album = sanitize_filename(raw_album)
 
-        # Filename (with track number if present)
-        track_num = getattr(track, "track_number", None)
+        # Track filename
         file_name = f"{track_num:02d} - {song}.mp3" if isinstance(track_num, int) and track_num > 0 else f"{song}.mp3"
 
-        # Base folder handling (avoid Album/Artist/Album nesting)
-        base = sanitize_filename(base_folder) if base_folder else ""
-        if base and base.lower() == album.lower():
-            base = ""  # prevent duplicate album segment
+        # Build absolute destination folder
+        base_folder_clean = sanitize_filename(base_folder) if base_folder else ""
+        if base_folder_clean.lower() == album.lower():
+            base_folder_clean = ""
 
-        # Build final destination: <base>/<Artist>/<Album>/
-        parts = [p for p in [base, artist, album] if p]
-        destination_path = os.path.join(download_path, *parts) if parts else os.path.join(artist, album)
+        parts = [p for p in [base_folder_clean, artist, album] if p]
+        destination_path = os.path.join(download_path, *parts)
+        os.makedirs(destination_path, exist_ok=True)
+
+        # Full file path
         full_destination = os.path.join(destination_path, file_name)
 
-        # Skip if already there
+        # Skip if already downloaded
         if os.path.exists(full_destination):
             print(f"Already downloaded: {full_destination}")
             continue
 
-        # Ensure folder exists
-        os.makedirs(destination_path, exist_ok=True)
-
-        # yt-dlp options per-track so we don't mutate globals
+        # yt-dlp options per track
         ydl_local = dict(ydl_opts)
         ydl_local['outtmpl'] = os.path.join(destination_path, os.path.splitext(file_name)[0] + ".%(ext)s")
 
@@ -294,19 +323,18 @@ def songs_downloader(base_folder, tracks):
             with yt_dlp.YoutubeDL(ydl_local) as ydl:
                 ydl.download([youtube_url])
 
-            # If the postprocessor altered the name, normalize to our intended filename
+            # Rename downloaded file if yt-dlp changed it
             if not os.path.exists(full_destination):
-                mp3s = [file_name for file_name in os.listdir(destination_path) if file_name.lower().endswith('.mp3')]
+                mp3s = [f for f in os.listdir(destination_path) if f.lower().endswith('.mp3')]
                 if mp3s:
-                    newest = max((os.path.join(destination_path, file_name) for file_name in mp3s),
-                                 key=os.path.getmtime)
+                    newest = max((os.path.join(destination_path, f) for f in mp3s), key=os.path.getmtime)
                     if newest != full_destination:
                         try:
                             os.rename(newest, full_destination)
                         except Exception as e:
                             print(f"Warning: couldn't rename {newest} -> {full_destination}: {e}")
 
-            # Tagging
+            # Tag MP3
             if os.path.exists(full_destination):
                 audiofile = eyed3.load(full_destination)
                 if audiofile is None:
@@ -355,15 +383,15 @@ def songs_downloader(base_folder, tracks):
             print(f"Error downloading '{raw_song}' by '{raw_artist}': {e}. Skipping.")
             failed += 1
             failed_list.append(f"{raw_song} by {raw_artist}")
-            continue
         except Exception as e:
             print(f"Unexpected error for '{raw_song}' by '{raw_artist}': {e}. Skipping.")
             failed += 1
             failed_list.append(f"{raw_song} by {raw_artist}")
-            continue
 
-    for failedTrack in failed_list:
-        print(f"Failed to download: {failedTrack}")
+    for failed_track in failed_list:
+        print(f"Failed to download: {failed_track}")
+
+    print(f"Downloaded: {successful}, Failed: {failed}")
 
 
 print("Logged in as " + spotify.current_user().email)
@@ -570,7 +598,7 @@ def main():
                 continue  # loops back in main()
             tracks = get_playlist_tracks(playlist)
             tracks = playlist_tracks_to_tracks(tracks)
-            songs_downloader("Music", tracks)
+            songs_downloader(playlist_name, tracks)
         elif action == 2:
             playlists = list_playlists()
             try:
@@ -581,14 +609,14 @@ def main():
                 continue  # loops back in main()
             tracks = get_playlist_tracks(playlist)
             recommendations = get_recommendations(tracks)
-            songs_downloader("Music", recommendations)
+            songs_downloader(download_path, recommendations)
         elif action == 3:
             top_tracks = get_top_tracks(int(input("Enter number of top tracks: ")))
-            songs_downloader("Music", top_tracks)
+            songs_downloader(download_path, top_tracks)
         elif action == 4:
             top_tracks = get_top_tracks(int(input("Enter number of top tracks: ")))
             recommendations = get_recommendations(top_tracks)
-            songs_downloader("Music", recommendations)
+            songs_downloader(download_path, recommendations)
         elif action == 5:
             playlists = list_playlists()
             playlist = playlists.items[int(input("Enter playlist number: "))]
@@ -615,7 +643,7 @@ def main():
         elif action == 11:  # New action for downloading liked songs
             liked_songs = list_liked_songs()
             liked_tracks = [item.track for item in liked_songs]
-            songs_downloader("Music", liked_tracks)
+            songs_downloader(download_path, liked_tracks)
 
 
 if __name__ == "__main__":
