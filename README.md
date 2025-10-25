@@ -49,7 +49,7 @@ pip install tekore yt-dlp eyed3
 2. **API Credentials:**
    Save your `client_id` and `client_secret` in `CLIENT_ID.txt` and `CLIENT_SECRET.txt` respectively.
 
-3. **FFmpeg:**
+3. **[FFmpeg](https://github.com/yt-dlp/FFmpeg-Builds/releases/tag/latest):**
    Set `ffmpeg_path` in the script to the location of `ffmpeg.exe` on your system.
 
 4. **Run Script**
