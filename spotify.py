@@ -16,7 +16,6 @@ client_secret_path = "CLIENT_SECRET.txt"  # 'YOUR_CLIENT_SECRET_LOCATION_HERE'
 user_token_path = "USER_TOKEN.txt"  # Will be filled automatically, don't worry about filling this
 ffmpeg_path = "D:\\Programs\\ffmpeg.exe"  # 'YOUR_FFMPEG_LOCATION_HERE'
 download_path = "E:\\NewDL"  # 'YOUR_DOWNLOAD_FOLDER_LOCATION_HERE'
-playlist_name = "Playlist Name"  # change as you wish
 
 # If you use Windows, make sure to use \\ instead of \.
 # It should look something like this 'C:\\ffmpeg\\bin\\ffmpeg.exe'
@@ -259,7 +258,7 @@ def build_download_path(playlist_name, artist, album):
     return destination_path
 
 
-def songs_downloader(base_folder, tracks):
+def songs_downloader(playlist_name, tracks):
     """
     Download Spotify tracks as MP3s to `download_path/<base>/<Artist>/<Album>/<Track>.mp3`.
     Handles:
@@ -290,13 +289,8 @@ def songs_downloader(base_folder, tracks):
         # Track filename
         file_name = f"{track_num:02d} - {song}.mp3" if isinstance(track_num, int) and track_num > 0 else f"{song}.mp3"
 
-        # Build absolute destination folder
-        base_folder_clean = sanitize_filename(base_folder) if base_folder else ""
-        if base_folder_clean.lower() == album.lower():
-            base_folder_clean = ""
-
-        parts = [p for p in [base_folder_clean, artist, album] if p]
-        destination_path = os.path.join(download_path, *parts)
+        parts = [p for p in [artist, album] if p]
+        destination_path = os.path.join(download_path, playlist_name, *parts)
         os.makedirs(destination_path, exist_ok=True)
 
         # Full file path
@@ -567,12 +561,12 @@ def post_search_menu(query, results):
         # Choose a song to download (one or more)
         songs_index = input("Enter songs number, all for all: ")
         if songs_index == 'all':
-            songs_downloader("Search : " + query, results)
+            songs_downloader(playlist_name, results)
         else:
             # Split could be " ", "." or "-"
             songs_index = songs_index.replace(',', ' ').replace('.', ' ').replace('-', ' ').split()
             songs_index = [int(i) for i in songs_index]
-            songs_downloader("Search : " + query, [results[i] for i in songs_index])
+            songs_downloader(playlist_name, [results[i] for i in songs_index])
     elif action == 2:
         playlist = create_playlist(query, "Created by spotify-downloader")
         add_tracks_to_playlist(playlist, results)
@@ -593,6 +587,7 @@ def main():
             try:
                 playlist_index = int(input("Enter playlist number: "))
                 playlist = playlists.items[playlist_index]
+                playlist_name = playlist.name
             except (ValueError, IndexError):
                 print("Invalid playlist number. Try again.")
                 continue  # loops back in main()
@@ -604,19 +599,22 @@ def main():
             try:
                 playlist_index = int(input("Enter playlist number: "))
                 playlist = playlists.items[playlist_index]
+                playlist_name = playlist.name
             except (ValueError, IndexError):
                 print("Invalid playlist number. Try again.")
                 continue  # loops back in main()
             tracks = get_playlist_tracks(playlist)
             recommendations = get_recommendations(tracks)
-            songs_downloader(download_path, recommendations)
+            songs_downloader(playlist_name, recommendations)
         elif action == 3:
             top_tracks = get_top_tracks(int(input("Enter number of top tracks: ")))
-            songs_downloader(download_path, top_tracks)
+            playlist_name = "Top tracks"
+            songs_downloader(playlist_name, top_tracks)
         elif action == 4:
             top_tracks = get_top_tracks(int(input("Enter number of top tracks: ")))
             recommendations = get_recommendations(top_tracks)
-            songs_downloader(download_path, recommendations)
+            playlist_name = "Top tracks recommendations"
+            songs_downloader(playlist_name, recommendations)
         elif action == 5:
             playlists = list_playlists()
             playlist = playlists.items[int(input("Enter playlist number: "))]
@@ -643,7 +641,8 @@ def main():
         elif action == 11:  # New action for downloading liked songs
             liked_songs = list_liked_songs()
             liked_tracks = [item.track for item in liked_songs]
-            songs_downloader(download_path, liked_tracks)
+            playlist_name = "Liked songs"
+            songs_downloader(playlist_name, liked_tracks)
 
 
 if __name__ == "__main__":
