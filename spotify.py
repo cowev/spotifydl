@@ -6,36 +6,37 @@ import yt_dlp as youtube_dl
 import eyed3
 import urllib
 import re
-# import vlc
 
 # Spotify API
-client_id = 'YOUR_CLIENT_ID_HERE'
-client_secret = 'YOUR_CLIENT_SECRET_HERE'
+client_id_path = "CLIENT_ID.txt"  # 'YOUR_CLIENT_ID_LOCATION_HERE'
+client_secret_path = "CLIENT_SECRET.txt "  # 'YOUR_CLIENT_SECRET_LOCATION_HERE'
+ffmpeg_path = "D:\\Programs\\ffmpeg.exe"  # 'YOUR_FFMEG_LOCATION_HERE'
 
-redirect_uri = 'http://localhost:5000/'
+redirect_uri = 'http://localhost:8001/'
 
 user_token = None
-# Read user_token from file if it exists
-if os.path.exists('user_token.txt'):
-    with open('user_token.txt', 'r') as f:
+# Read user_token from a file if it exists
+if os.path.exists('USER_TOKEN.txt'):
+    with open('USER_TOKEN.txt', 'r') as f:
         user_token = f.read()
 
-# Test token if it is valid
+# Test a token if it is valid
 try:
     spotify = tk.Spotify(user_token)
     spotify.current_user()
 except tk.HTTPError:
-    # If token is invalid, get new token
+    # If a token is invalid, get a new token
     user_token = tk.prompt_for_user_token(
-        client_id,
-        client_secret,
+        client_id_path,
+        client_secret_path,
         redirect_uri,
         scope=tk.scope.every
     )
     # Save user_token in a file
-    with open('user_token.txt', 'w') as f:
+    with open('USER_TOKEN', 'w') as f:
         f.write(str(user_token))
     spotify = tk.Spotify(user_token)
+
 
 class MyLogger(object):
     def debug(self, msg):
@@ -52,10 +53,11 @@ def my_hook(d):
     if d['status'] == 'finished':
         print('Done downloading, now converting ...')
 
+
 ydl_opts = {
-    # If you use windows make sure to use \\ instead of \.
+    # If you use Windows, make sure to use \\ instead of \.
     # It should look something like this 'C:\\ffmpeg\\bin\\ffmpeg.exe'
-    'ffmpeg_location': 'YOUR_FFMEG_LOCATION_HERE',
+    'ffmpeg_location': ffmpeg_path,
     'format': 'bestaudio/best',
     'extractaudio': True,
     'outtmpl': '%(title)s.%(ext)s',
@@ -82,6 +84,7 @@ def get_yt_track_url(track):
         except:
             return None
 
+
 def sanitize_filename(name: str) -> str:
     """
     Remove or replace characters that are not allowed in filenames.
@@ -92,6 +95,7 @@ def sanitize_filename(name: str) -> str:
     sanitized = sanitized.strip().rstrip('.')
     return sanitized
 
+
 def songs_downloader(base_folder, tracks):
     """
     Save as: <base or none>/<Artist>/<Album>/<NN - Song>.mp3
@@ -101,14 +105,14 @@ def songs_downloader(base_folder, tracks):
         print(f"Tracks processed: {i}/{len(tracks)}")
 
         # Raw fields from Spotify (with safe fallbacks)
-        raw_song   = getattr(track, "name", None) or "Unknown Title"
+        raw_song = getattr(track, "name", None) or "Unknown Title"
         raw_artist = (track.artists[0].name if getattr(track, "artists", None) else "Unknown Artist")
-        raw_album  = (track.album.name if getattr(track, "album", None) else "Unknown Album")
+        raw_album = (track.album.name if getattr(track, "album", None) else "Unknown Album")
 
         # Sanitize for filesystem
-        song   = sanitize_filename(raw_song)
+        song = sanitize_filename(raw_song)
         artist = sanitize_filename(raw_artist)
-        album  = sanitize_filename(raw_album)
+        album = sanitize_filename(raw_album)
 
         # Filename (with track number if present)
         track_num = getattr(track, "track_number", None)
@@ -202,6 +206,7 @@ def songs_downloader(base_folder, tracks):
 
 print("Logged in as " + spotify.current_user().email)
 
+
 def choose_quality():
     # Choose quality of songs
     quality = input("Choose quality of songs (190 or 320): ")
@@ -223,6 +228,7 @@ def list_playlists():
         print(playlist.name)
     return playlists
 
+
 def get_playlist_tracks(playlist):
     tracks = []
     playlist_uri = playlist.uri.split(":")[-1]
@@ -232,6 +238,8 @@ def get_playlist_tracks(playlist):
         results = spotify.next(results)
         tracks.extend(results.items)
     return tracks
+
+
 def list_liked_songs():
     liked_songs = []
     results = spotify.saved_tracks()
@@ -242,15 +250,16 @@ def list_liked_songs():
     return liked_songs
 
 
-    
 def get_recommendations(tracks):
     track_ids = [t.track.id for t in tracks]
     recommendations = spotify.recommendations(track_ids=track_ids).tracks
     return recommendations
 
+
 def get_top_tracks(limit=5):
     top_tracks = spotify.current_user_top_tracks(limit=limit).items
     return top_tracks
+
 
 def create_playlist(name, description):
     user = spotify.current_user()
@@ -262,9 +271,11 @@ def create_playlist(name, description):
     )
     return playlist
 
+
 def add_tracks_to_playlist(playlist, tracks):
     uris = [t.uri for t in tracks]
     spotify.playlist_add(playlist.id, uris=uris)
+
 
 def menu():
     print("1. Download songs from playlist")
@@ -288,25 +299,31 @@ def playlist_tracks_to_tracks(playlist_tracks):
         tracks.append(playlist_track.track)
     return tracks
 
+
 def search(query, types=('track', 'artist', 'album')):
     results = spotify.search(query, types=types, limit=10)
     return results
+
 
 def search_tracks(query):
     results = search(query, types=('track',))
     return results
 
+
 def search_artists(query):
     results = search(query, types=('artist',))
     return results
+
 
 def search_albums(query):
     results = search(query, types=('album',))
     return results
 
+
 def search_playlists(query):
     results = search(query, types=('playlist',))
     return results
+
 
 def search_menu():
     print("1. Search tracks")
@@ -339,7 +356,8 @@ def search_menu():
         return query, results[0].items
     elif action == 4:
         return None
-    
+
+
 def post_search_menu(query, results):
     print()
     print("1. Download songs from search results")
@@ -350,18 +368,19 @@ def post_search_menu(query, results):
         # Choose song to download (one or more)
         songs_index = input("Enter songs number, all for all: ")
         if songs_index == 'all':
-            songs_downloader("Search : "+query, results)
+            songs_downloader("Search : " + query, results)
         else:
             # Split could be a , a space , a . or a -
             songs_index = songs_index.replace(',', ' ').replace('.', ' ').replace('-', ' ').split()
             songs_index = [int(i) for i in songs_index]
-            songs_downloader("Search : "+query, [results[i] for i in songs_index])
+            songs_downloader("Search : " + query, [results[i] for i in songs_index])
     elif action == 2:
         playlist = create_playlist(query, "Created by spotify-downloader")
         add_tracks_to_playlist(playlist, results)
         print("Playlist created: " + playlist.name)
     elif action == 3:
         return
+
 
 def main():
     while True:
@@ -414,13 +433,8 @@ def main():
             songs_downloader("Music", liked_tracks)
 
 
-
-
-           
-
 import time
 import sys
+
 if __name__ == "__main__":
     main()
-
-
