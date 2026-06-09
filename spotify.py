@@ -14,6 +14,7 @@ import threading
 from queue import Queue
 
 # Spotify API
+# auth_path = "auth.json"
 client_id_path = "CLIENT_ID.txt"  # 'YOUR_CLIENT_ID_LOCATION_HERE'
 client_secret_path = "CLIENT_SECRET.txt"  # 'YOUR_CLIENT_SECRET_LOCATION_HERE'
 user_token_path = "USER_TOKEN.txt"  # Will be filled automatically, don't worry about filling this
@@ -26,7 +27,7 @@ lock = threading.Lock()
 # If you use Windows, make sure to use \\ instead of \.
 # It should look something like this 'C:\\ffmpeg\\bin\\ffmpeg.exe'
 
-redirect_uri = 'http://localhost:5000/'
+redirect_uri = 'https://httpbin.org/anything'
 
 # Read client_id
 if os.path.exists(client_id_path):
@@ -71,6 +72,7 @@ except tk.HTTPError:
 
 eyed3.log.setLevel("ERROR")
 
+
 class MyLogger:
     def debug(self, msg):
         # For compatibility with yt-dlp, both debug and info are passed into debug
@@ -87,7 +89,7 @@ class MyLogger:
         pass
 
     def error(self, msg):
-        print(msg)
+        pass  # print(msg)
 
 
 def my_hook(d):
@@ -124,8 +126,8 @@ def make_ascii(query):
 
 def score_result(result, expected_song, expected_artist, target_duration=None):
     # Score a YouTube result based on title, artist, duration, and unwanted content.
-    title = result['title'].lower()
-    uploader = result.get('uploader', '').lower()
+    title = (result['title'] or "").lower()
+    uploader = (result.get('uploader', '') or "").lower()
     duration = result.get('duration', 0)  # seconds
     score = 0
 
@@ -139,7 +141,7 @@ def score_result(result, expected_song, expected_artist, target_duration=None):
 
     # Artist in uploader
     if expected_artist.lower() in uploader:
-        score += 0.2
+        score += 0.4
 
     # Duration match
     if target_duration:
@@ -149,7 +151,7 @@ def score_result(result, expected_song, expected_artist, target_duration=None):
     # Penalize unwanted content
     unwanted_terms = ['cover', 'karaoke', 'instrumental', 'remix', 'slowed', 'nightcore', 'reverb']
     for term in unwanted_terms:
-        if term in title and term not in expected_song.lower():
+        if term in title and term not in (expected_song.lower() or expected_artist.lower()):
             score -= 0.4
 
     return max(0, score)
@@ -160,8 +162,8 @@ def normalize_album(track):
     Normalize the album name by removing unwanted tags or duplicates of the song name.
     """
     if track.album:
-        album = track.album.name
-        song = track.name
+        album = (track.album.name or "")
+        song = (track.name or "")
 
         if album.lower().replace(" ", "") == song.lower().replace(" ", ""):
             album = ""
@@ -212,13 +214,13 @@ def get_best_youtube_matches(track, max_results=10):
                             'title': r['title']
                         })
 
-                if scored_results != []:
+                if scored_results:
                     scored_results.sort(key=lambda x: x['score'], reverse=True)
 
                 return scored_results
         except yt_dlp.utils.DownloadError as e:
             if is_age_restricted_error(e):
-                print(f"Age restriction detected during search {query}. Trying alternative approach...")
+                print(f"Age restriction detected during search {query}. Trying an alternative approach...")
                 # Try a different search approach
                 return search_with_alternative_method(query, max_results)
             else:
@@ -240,7 +242,7 @@ def get_best_youtube_matches(track, max_results=10):
                 scored_results = []
                 for r in results:
                     # For flat extraction, we have limited info, so use basic scoring
-                    title = r.get('title', '').lower()
+                    title = (r.get('title', '') or "").lower()
                     score = 0
 
                     # Basic title matching
@@ -252,7 +254,8 @@ def get_best_youtube_matches(track, max_results=10):
                         score += 0.3
 
                     # Penalize unwanted content
-                    unwanted_terms = ['cover', 'karaoke', 'instrumental', 'remix', 'slowed', 'nightcore', 'daycore', 'reverb']
+                    unwanted_terms = ['cover', 'karaoke', 'instrumental', 'remix', 'slowed', 'nightcore', 'daycore',
+                                      'reverb']
                     for term in unwanted_terms:
                         if term in title and term not in song.lower():
                             score -= 0.4
@@ -270,7 +273,7 @@ def get_best_youtube_matches(track, max_results=10):
             return []
 
     query = f"{artist} {song} {album}"
-    print(f"Searching YouTube for: {query}")
+    # print(f"Searching YouTube for: {query}")
     scored_results = search_and_score(query)
 
     attempted_queries = [query]
@@ -293,7 +296,8 @@ def get_best_youtube_matches(track, max_results=10):
                 fallback_query3 = make_ascii(f"{artist} {song}")
                 if fallback_query3 not in attempted_queries:
                     attempted_queries.append(fallback_query3)
-                    print(f"Primary search failed, trying fallback search 3... Searching YouTube for: {fallback_query3}")
+                    print(
+                        f"Primary search failed, trying fallback search 3... Searching YouTube for: {fallback_query3}")
                     scored_results = search_and_score(fallback_query3)
 
     return scored_results
@@ -385,7 +389,9 @@ def download_single_track(args):
         youtube_results = get_best_youtube_matches(track)
         if not youtube_results:
             with lock:
-                print(f"[{track_index}/{total_tracks}] Could not find good enough YouTube match for {raw_song} by {raw_artist}")
+                print(
+                    f"[{track_index}/{total_tracks}] Could not find good enough YouTube match for {raw_song} by {raw_artist}"
+                )
             return 0, 1, f"{raw_song} by {raw_artist}"
 
         success = False
@@ -457,8 +463,9 @@ def download_single_track(args):
                 if audiofile is None:
                     with lock:
                         print(
-                            f"[{track_index}/{total_tracks}] Warning: couldn't load mp3 for tagging: {full_destination}")
-                    # Still count as successful since file exists
+                            f"[{track_index}/{total_tracks}] Warning: couldn't load mp3 for tagging: {full_destination}"
+                        )
+                    # Still count as successful since the file exists
                     return 1, 0, None
 
                 if audiofile.tag is None:
@@ -471,6 +478,7 @@ def download_single_track(args):
                     audiofile.tag.album_artist = track.album.artists[0].name
 
                 # Genre from Spotify artist
+                """
                 try:
                     artist_id = track.artists[0].id
                     genres = spotify.artist(artist_id).genres
@@ -482,6 +490,7 @@ def download_single_track(args):
 
                 if isinstance(track_num, int) and track_num > 0:
                     audiofile.tag.track_num = track_num
+                """
 
                 # Album art
                 try:
@@ -502,7 +511,7 @@ def download_single_track(args):
             except Exception as e:
                 with lock:
                     print(f"[{track_index}/{total_tracks}] Error tagging {full_destination}: {e}")
-                # Still count as successful since download worked
+                # Still count as successful since the download worked
                 return 1, 0, None
         else:
             with lock:
@@ -576,27 +585,6 @@ def songs_downloader(playlist_name, tracks, parallel=True):
     print("=" * 50)
 
     return successful, failed, failed_list
-
-
-def _is_age_restricted_error(self, error):
-    """
-    Comprehensive age restriction error detection.
-    """
-    error_str = str(error).lower()
-    age_indicators = [
-        'age-restricted',
-        'confirm your age',
-        'sign in to confirm',
-        'restricted content',
-        'login required',
-        'this video may be inappropriate',
-        'content warning',
-        'age verification required',
-        'youtube account',
-        'protected content'
-    ]
-
-    return any(indicator in error_str for indicator in age_indicators)
 
 
 print("Logged in as " + spotify.current_user().email)
